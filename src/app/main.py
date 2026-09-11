@@ -15,8 +15,9 @@ from groq import Groq
 
 # Load API key from .env
 load_dotenv()
-groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else Non
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -165,7 +166,11 @@ def rag_chat(query: str, top_k: int, school: str):
     User's dilemma:
     {query}
     """
-
+    if not groq_client:
+        return (
+            "Config error: GROQ_API_KEY missing.",
+            sources_markdown,
+        )
     completion = groq_client.chat.completions.create(
         model="openai/gpt-oss-20b",  # or the model currently configured
         messages=[

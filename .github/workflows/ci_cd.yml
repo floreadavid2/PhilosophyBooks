@@ -1,58 +1,61 @@
-name: CI/CD Pipeline - Philosophy Engine
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  name: CI/CD Pipeline - Philosophy Engine
 
-jobs:
-  # -------------------------------------------------------------
-  # Job 1: Teste automate (Pytest, FastAPI endpoints, Retrieval)
-  # -------------------------------------------------------------
-  test:
-    name: Run Unit & Integration Tests
-    runs-on: ubuntu-latest
+  on:
+    push:
+      branches: ["main"]
+    pull_request:
+      branches: ["main"]
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+  jobs:
+    # -------------------------------------------------------------
+    # Job 1: Automated tests (Pytest, FastAPI endpoints, Retrieval)
+    # -------------------------------------------------------------
+    test:
+      name: Run Unit & Integration Tests
+      runs-on: ubuntu-latest
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        - name: Set up Python 3.11
+          uses: actions/setup-python@v5
+          with:
+            python-version: "3.11"
+            cache: "pip"
 
-      - name: Execute Pytest suite
-        env:
-          PYTHONPATH: "."
-        run: |
-          pytest tests/ -v
+        - name: Install dependencies
+          run: |
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
 
-  # -------------------------------------------------------------
-  # Job 2: Build & Validare Container Docker
-  # -------------------------------------------------------------
-  build-docker:
-    name: Build Docker Container
-    needs: test
-    runs-on: ubuntu-latest
+        - name: Run tests
+          env:
+            PYTHONPATH: "."
+            GROQ_API_KEY: "dummy-key-for-testing"
+          run: |
+            pytest tests/ -v
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    # -------------------------------------------------------------
+    # Job 2: Build & Validate Docker Container
+    # -------------------------------------------------------------
+    build-docker:
+      name: Build Docker Container
+      needs: test
+      runs-on: ubuntu-latest
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
 
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: philosophy-engine:latest
+        - name: Set up Docker Buildx
+          uses: docker/setup-buildx-action@v3
+
+        - name: Build Docker image
+          uses: docker/build-push-action@v5
+          with:
+            context: .
+            push: false
+            tags: philosophy-engine:latest
+
