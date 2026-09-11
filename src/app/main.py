@@ -1,45 +1,41 @@
-print("MAIN START")
 
-from src.serving.inference import get_recommendations
+from src.serving.inference import get_recommendations, recommender
 
+import os
+import sys
+from contextlib import asynccontextmanager
 from typing import List, Optional
+
 from fastapi import FastAPI, HTTPException
 import gradio as gr
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+from groq import Groq
 
 
-print("INFERENCE IMPORTED")
+# Load API key from .env
+load_dotenv()
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
 
 app = FastAPI(
-    title="Philosophy Semantic Search & Recommendation Engine",
-    description="Vector retrieval system for philosophical works using FastEmbed ONNX",
+    title="Philosophy RAG Engine",
     version="1.0.0",
+    lifespan=lifespan
 )
 
 
-# --- Pydantic Schemas ---
-class RecommendRequest(BaseModel):
-    query: str = Field(
-        ...,
-        min_length=3,
-        description="Search query or theme to find books for",
-    )
-    top_k: int = Field(
-        default=3, ge=1, le=10, description="Number of recommendations"
-    )
-    school: Optional[str] = Field(
-        default=None, description="Optional philosophical school filter"
-    )
+# --- Pydantic Models ---
 
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "query": "overcoming gods, individualism, and creating personal values",
-                "top_k": 3,
-                "school": None,
-            }
-        }
-    }
+class RecommendRequest(BaseModel):
+    query: str = Field(..., min_length=3)
+    top_k: int = Field(default=3, ge=1, le=10)
+    school: Optional[str] = Field(default=None)
 
 
 class BookRecommendation(BaseModel):
@@ -57,20 +53,17 @@ class RecommendResponse(BaseModel):
     recommendations: List[BookRecommendation]
 
 
-# --- Health Check (Required for AWS ALB) ---
+# --- FastAPI Routes ---
+
 @app.get("/", tags=["Health"])
 def health_check():
     return {
         "status": "healthy",
-        "service": "philosophy-semantic-engine",
-        "version": "1.0.0",
+        "service": "philosophy-rag"
     }
 
 
-# --- REST API Recommendation Endpoint ---
-@app.post(
-    "/recommend", response_model=RecommendResponse, tags=["Recommendation"]
-)
+@app.post("/recommend", response_model=RecommendResponse, tags=["API"])
 def recommend_books(payload: RecommendRequest):
     try:
         results = get_recommendations(
@@ -78,45 +71,116 @@ def recommend_books(payload: RecommendRequest):
             top_k=payload.top_k,
             school=payload.school,
         )
+
         return RecommendResponse(
             query=payload.query,
             results_count=len(results),
             recommendations=results,
         )
+
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Inference error: {str(e)}"
+            status_code=500,
+            detail=str(e)
         )
 
 
-# --- Gradio UI Wrapper ---
-def search_ui(query: str, top_k: int, school: str):
+# --- RAG Pipeline (Gradio UI) ---
+
+def rag_chat(query: str, top_k: int, school: str):
     if not query.strip():
-        return "Please enter a valid philosophical query."
+        return (
+            "Please enter a valid philosophical question.",
+            ""
+        )
 
     selected_school = None if school == "All" else school
-    results = get_recommendations(
-        query=query, top_k=int(top_k), school=selected_school
+
+    # 1. RETRIEVAL: Retrieve the most relevant books using ONNX embeddings
+    retrieved_books = get_recommendations(
+        query=query,
+        top_k=int(top_k),
+        school=selected_school
     )
 
-    if not results:
-        return "No matches found."
-
-    output_cards = []
-    for idx, item in enumerate(results, 1):
-        score_percent = f"{item['similarity_score'] * 100:.1f}%"
-        card = (
-            f"### {idx}. {item['title']} by **{item['author']}**\n"
-            f"- **School:** {item['school']}\n"
-            f"- **Similarity Match:** `{score_percent}`\n"
-            f"- **Summary:** {item['summary']}\n"
+    if not retrieved_books:
+        return (
+            "No relevant books were found. Try a different search query.",
+            "No sources available."
         )
-        output_cards.append(card)
 
-    return "\n---\n".join(output_cards)
+    # 2. AUGMENT: Build the context from retrieved books
+    context_text = ""
+    sources_markdown = "### Sources used:\n"
+
+    for idx, book in enumerate(retrieved_books, 1):
+        context_text += (
+            f"Title: {book['title']}, "
+            f"Author: {book['author']}, "
+            f"Summary: {book['summary']}\n\n"
+        )
+
+        sources_markdown += (
+            f"- **{book['title']}** by {book['author']} "
+            f"*(Similarity: {book['similarity_score'] * 100:.1f}%)*\n"
+        )
+
+    prompt = f"""
+    You are an expert philosophy assistant.
+    Answer the user's question STRICTLY using the information provided
+    in the Context below.
+
+    If the information is not available in the context, clearly state
+    that you cannot answer based on the books available in the database.
+
+    Do not invent information.
+    Be concise, thoughtful, and explain philosophical concepts clearly.
+
+    Context (summaries retrieved from the indexed philosophy database):
+    {context_text}
+
+    User's question: {query}
+    """
+
+    # 3. GENERATION: Send the augmented prompt to the LLM
+    system_instruction = """
+    You are a university professor of philosophy: empathetic, erudite, and deeply reflective.
+    Do not speak like a search engine and do not limit your response to cold lists or tables.
+    
+    Writing instructions:
+    1. Respond directly, warmly, and thoughtfully to the user's existential dilemma.
+    2. Integrate the ideas from the provided books into a coherent essay, showing how the authors' perspectives connect and complement or challenge one another.
+    3. Provide an applied synthesis: explain how the user can use these ideas to gain clarity and navigate everyday life.
+    4. Base your arguments STRICTLY on the provided context. Do not invent or introduce external theories or information.
+    5. Respond concretely, don't just send the user to read the books.
+    6. Don't make a different section for each book.
+    7. Have shorter responses.
+    8. Remember that talking about their situation is central, incorporating the book in your response is second. 
+    """
+
+    user_payload = f"""
+    Context from the indexed philosophy library:
+    {context_text}
+    
+    User's dilemma:
+    {query}
+    """
+
+    completion = groq_client.chat.completions.create(
+        model="openai/gpt-oss-20b",  # or the model currently configured
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_payload},
+        ],
+        temperature=0.6,
+        max_completion_tokens=2048,
+    )
+    ai_response = completion.choices[0].message.content
+    return ai_response, sources_markdown
 
 
-# --- Gradio Interface Layout ---
+# --- Gradio UI Layout ---
+
 schools = [
     "All",
     "Absurdism",
@@ -132,35 +196,70 @@ schools = [
     "Marxism",
     "Classical Liberalism",
     "Confucianism",
-    "Taoism",
+    "Taoism"
 ]
 
-gradio_interface = gr.Interface(
-    fn=search_ui,
-    inputs=[
-        gr.Textbox(
-            lines=2,
-            placeholder="e.g., how to accept fate and maintain emotional peace...",
-            label="What concept or dilemma are you exploring?",
-        ),
-        gr.Slider(
-            minimum=1, maximum=5, value=3, step=1, label="Top Recommendations"
-        ),
-        gr.Dropdown(
-            choices=schools, value="All", label="Filter by Philosophical School"
-        ),
-    ],
-    outputs=gr.Markdown(label="Recommended Books"),
-    title="Philosophy Semantic Recommendation Engine",
-    description="Vector-based semantic search powered by FastEmbed embeddings.",
-    examples=[
-        ["a book about defying gods and overcoming conventional morality", 3, "All"],
-        ["dealing with loss, anxiety, and things outside my control", 2, "Stoicism"],
-        ["human nature is fundamentally good and like a sprouting plant", 2, "Confucianism"],
-    ],
-)
 
-# Mount Gradio app at /ui
-app = gr.mount_gradio_app(app, gradio_interface, path="/ui")
+def create_gradio_ui():
+    schools = [
+        "All",
+        "Absurdism",
+        "Existentialism",
+        "Christian Existentialism",
+        "Nietzscheanism",
+        "Philosophical Pessimism",
+        "Egoist Anarchism",
+        "Stoicism",
+        "Political Realism",
+        "Social Contract",
+        "Political Enlightenment",
+        "Marxism",
+        "Classical Liberalism",
+        "Confucianism",
+        "Taoism",
+    ]
 
-print("MAIN FINISHED")
+    with gr.Blocks(title="Philosophy RAG Engine") as demo:
+        gr.Markdown("# 🏛️ Philosophy RAG Assistant")
+        gr.Markdown(
+            "Ask any philosophical question."
+        )
+
+        with gr.Row():
+            with gr.Column(scale=2):
+                query_input = gr.Textbox(
+                    lines=2,
+                    placeholder="e.g., How to handle grief and things beyond control?",
+                    label="Your quesiton",
+                )
+                with gr.Row():
+                    k_slider = gr.Slider(
+                        minimum=1,
+                        maximum=5,
+                        value=3,
+                        step=1,
+                        label="Analized books (Top K)",
+                    )
+                    school_dropdown = gr.Dropdown(
+                        choices=schools, value="All", label="Philosophical school"
+                    )
+                submit_btn = gr.Button(
+                    "Ask the AI philosopher", variant="primary"
+                )
+
+            with gr.Column(scale=3):
+                ai_output = gr.Markdown(label="AI response")
+                gr.Markdown("---")
+                sources_output = gr.Markdown(label="Cited sources")
+
+        submit_btn.click(
+            fn=rag_chat,
+            inputs=[query_input, k_slider, school_dropdown],
+            outputs=[ai_output, sources_output],
+        )
+
+    return demo
+
+if "pytest" not in sys.modules:
+    gradio_app = create_gradio_ui()
+    app = gr.mount_gradio_app(app, gradio_app, path="/ui")
