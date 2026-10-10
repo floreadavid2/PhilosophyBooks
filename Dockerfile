@@ -22,9 +22,7 @@ COPY src/ /app/src/
 
 # 7. Explicitly copy vector database artifacts (embeddings, metadata, selected model)
 # Matches paths expected by src/serving/inference.py
-COPY artifacts/embeddings/embeddings.npy /app/artifacts/embeddings.npy
-COPY artifacts/indexed_books.csv /app/artifacts/indexed_books.csv
-COPY artifacts/models/selected_model.txt /app/artifacts/selected_model.txt
+COPY artifacts/ /app/artifacts/
 
 # 8. Expose FastAPI & Gradio UI port
 EXPOSE 8000
