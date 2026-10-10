@@ -3,7 +3,6 @@ from typing import Any, Dict, List
 from fastembed import TextEmbedding
 import numpy as np
 import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
 
 ARTIFACTS_DIR = Path("artifacts")
 EMBEDDINGS_PATH = ARTIFACTS_DIR / "embeddings.npy"
@@ -96,3 +95,15 @@ def get_recommendations(
 ) -> List[Dict[str, Any]]:
     """Helper wrapper for API and UI layers."""
     return recommender.recommend(query=query, top_k=top_k, school_filter=school)
+
+def cosine_similarity(query_vec: np.ndarray, doc_matrix: np.ndarray) -> np.ndarray:
+    """Calculates cosine similarity strictly with NumPy."""
+    query_vec = query_vec.flatten()
+    dot_product = np.dot(doc_matrix, query_vec)
+    norm_query = np.linalg.norm(query_vec)
+    norm_docs = np.linalg.norm(doc_matrix, axis=1)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        similarity = np.where(norm_docs == 0, 0.0, dot_product / (norm_query * norm_docs))
+
+    return similarity
