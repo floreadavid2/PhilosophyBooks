@@ -1,61 +1,98 @@
+name: CI/CD Pipeline - Philosophy Engine
 
-  name: CI/CD Pipeline - Philosophy Engine
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
 
-  on:
-    push:
-      branches: ["main"]
-    pull_request:
-      branches: ["main"]
+jobs:
+  # -------------------------------------------------------------
+  # Job 1: Teste automate (Pytest)
+  # -------------------------------------------------------------
+  test:
+    name: Run Unit & Integration Tests
+    runs-on: ubuntu-latest
 
-  jobs:
-    # -------------------------------------------------------------
-    # Job 1: Automated tests (Pytest, FastAPI endpoints, Retrieval)
-    # -------------------------------------------------------------
-    test:
-      name: Run Unit & Integration Tests
-      runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
 
-        - name: Set up Python 3.11
-          uses: actions/setup-python@v5
-          with:
-            python-version: "3.11"
-            cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-        - name: Install dependencies
-          run: |
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt
+      - name: Run tests
+        env:
+          PYTHONPATH: "."
+          GROQ_API_KEY: "dummy-key-for-testing"
+        run: |
+          pytest tests/ -v
 
-        - name: Run tests
-          env:
-            PYTHONPATH: "."
-            GROQ_API_KEY: "dummy-key-for-testing"
-          run: |
-            pytest tests/ -v
+  # -------------------------------------------------------------
+  # Job 2: Validare Build Docker
+  # -------------------------------------------------------------
+  build-docker:
+    name: Build Docker Container
+    needs: test
+    runs-on: ubuntu-latest
 
-    # -------------------------------------------------------------
-    # Job 2: Build & Validate Docker Container
-    # -------------------------------------------------------------
-    build-docker:
-      name: Build Docker Container
-      needs: test
-      runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-        - name: Set up Docker Buildx
-          uses: docker/setup-buildx-action@v3
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: philosophy-engine:latest
 
-        - name: Build Docker image
-          uses: docker/build-push-action@v5
-          with:
-            context: .
-            push: false
-            tags: philosophy-engine:latest
+  # -------------------------------------------------------------
+  # Job 3: Continuous Deployment pe AWS EC2
+  # -------------------------------------------------------------
+  deploy-ec2:
+    name: Deploy to AWS EC2
+    needs: build-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            echo "=== Pasul 1: Sincronizare cod ==="
+            cd /home/ubuntu/PhilosophyBooks
+            git reset --hard
+            git pull origin main
+
+            echo "=== Pasul 2: Recompilare imagine Docker ==="
+            docker build -t philosophy-engine:latest .
+
+            echo "=== Pasul 3: Repornire container ==="
+            docker stop philosophy-app || true
+            docker rm philosophy-app || true
+
+            docker run -d \
+              --name philosophy-app \
+              --restart always \
+              -p 8000:8000 \
+              -e GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
+              philosophy-engine:latest
+
+            echo "=== Deployment finalizat cu succes! ==="
